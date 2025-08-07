@@ -1,0 +1,103 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: File Handler Lambda Function
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, prod]
+    Description: Environment name
+  
+  S3BucketName:
+    Type: String
+    Description: S3 bucket name for file storage
+    Default: file-handler-bucket
+  
+  DeploymentBucket:
+    Type: String
+    Description: S3 bucket for deployment artifacts
+    Default: file-handler-deployment-bucket
+
+Resources:
+  FileHandlerHttpApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      CorsConfiguration:
+        AllowOrigins:
+          - "*"
+        AllowHeaders:
+          - "*"
+        AllowMethods:
+          - "*"
+      DefaultRouteSettings:
+        DetailedMetricsEnabled: true
+
+  FileHandlerBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${S3BucketName}-${Environment}"
+      VersioningConfiguration:
+        Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: TransitionToIA
+            Status: Enabled
+            Transitions:
+              - TransitionInDays: 30
+                StorageClass: STANDARD_IA
+          - Id: TransitionToGlacier
+            Status: Enabled
+            Transitions:
+              - TransitionInDays: 90
+                StorageClass: GLACIER
+
+  FileHandlerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "file-handler-${Environment}"
+      Runtime: provided.al2023
+      Architectures:
+        - arm64
+      CodeUri:
+        Bucket: !Ref DeploymentBucket
+        Key: file-handler/function.zip
+      Handler: io.quarkus.amazon.lambda.http.LambdaHttpHandler
+      MemorySize: 1024
+      Timeout: 30
+      Environment:
+        Variables:
+          DISABLE_SIGNAL_HANDLERS: true
+          JAVA_TOOL_OPTIONS: -Djava.util.logging.manager=org.jboss.logmanager.LogManager
+          S3_BUCKET_NAME: !Ref FileHandlerBucket
+          QUARKUS_PROFILE: !Ref Environment
+      Policies:
+        - S3FullAccessPolicy:
+            BucketName: !Ref FileHandlerBucket
+      Events:
+        HttpApiEvent:
+          Type: HttpApi
+          Properties:
+            Path: /{proxy+}
+            Method: ANY
+            ApiId: !Ref FileHandlerHttpApi
+
+
+
+Outputs:
+  FileHandlerApi:
+    Description: API Gateway endpoint URL for File Handler
+    Value: !Sub "https://${FileHandlerHttpApi}.execute-api.${AWS::Region}.amazonaws.com/"
+  
+  FileHandlerFunction:
+    Description: File Handler Lambda Function ARN
+    Value: !GetAtt FileHandlerFunction.Arn
+  
+  S3Bucket:
+    Description: S3 Bucket for file storage
+    Value: !Ref FileHandlerBucket
