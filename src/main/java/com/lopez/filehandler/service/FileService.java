@@ -4,6 +4,7 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Base64;
 import java.util.List;
 import java.util.UUID;
 
@@ -16,6 +17,7 @@ import com.lopez.filehandler.dto.FileCollectionResponseWithContent;
 import com.lopez.filehandler.dto.FileResponse;
 import com.lopez.filehandler.dto.FileResponseWithContent;
 import com.lopez.filehandler.dto.FileUploadRequest;
+import com.lopez.filehandler.dto.MultiFileUploadRequest;
 
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -35,7 +37,7 @@ public class FileService {
     private static final List<String> ALLOWED_TYPES = Arrays.asList("application/pdf", "image/png", "image/jpeg");
 
     S3Client s3Client;
-    
+
     @jakarta.annotation.PostConstruct
     void initS3Client() {
         try {
@@ -56,14 +58,14 @@ public class FileService {
             if (s3Client == null) {
                 return ApiResponse.error("S3 service unavailable");
             }
-            
+
             if (!isValidFileType(request.getContentType())) {
                 return ApiResponse.badRequest("Only PDF, PNG, and JPG files are allowed");
             }
 
             String fileId = UUID.randomUUID().toString();
             String s3Key = generateS3Key(request.getUserId(), fileId, request.getFileName());
-            
+
             PutObjectRequest putRequest = PutObjectRequest.builder()
                     .bucket(bucketName)
                     .key(s3Key)
@@ -79,8 +81,46 @@ public class FileService {
                     request.getContentType(),
                     s3Key,
                     request.getFileData().length,
-                    LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME)
-            );
+                    LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME));
+
+            logger.infof("File uploaded successfully: %s", s3Key);
+            return ApiResponse.success("File uploaded successfully", response);
+
+        } catch (Exception e) {
+            logger.error("Error uploading file", e);
+            return ApiResponse.error("Failed to upload file: " + e.getMessage());
+        }
+    }
+
+    private ApiResponse<FileResponse> uploadFile(MultiFileUploadRequest request) {
+        try {
+            if (s3Client == null) {
+                return ApiResponse.error("S3 service unavailable");
+            }
+
+            if (!isValidFileType(request.getContentType())) {
+                return ApiResponse.badRequest("Only PDF, PNG, and JPG files are allowed");
+            }
+
+            String fileId = UUID.randomUUID().toString();
+            String s3Key = generateS3Key(request.getUserId(), fileId, request.getFileName());
+
+            PutObjectRequest putRequest = PutObjectRequest.builder()
+                    .bucket(bucketName)
+                    .key(s3Key)
+                    .contentType(request.getContentType())
+                    .storageClass(StorageClass.fromValue(storageClass))
+                    .build();
+
+            s3Client.putObject(putRequest, RequestBody.fromString(request.getEncodedFile()));
+
+            FileResponse response = new FileResponse(
+                    fileId,
+                    request.getFileName(),
+                    request.getContentType(),
+                    s3Key,
+                    request.getEncodedFile().length(),
+                    LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME));
 
             logger.infof("File uploaded successfully: %s", s3Key);
             return ApiResponse.success("File uploaded successfully", response);
@@ -93,25 +133,30 @@ public class FileService {
 
     public ApiResponse<List<FileResponse>> uploadMultipleFiles(String userId, List<FileUploadRequest> requests) {
         List<FileResponse> responses = new ArrayList<>();
-        
+
         for (FileUploadRequest request : requests) {
-            request.setUserId(userId);
-            ApiResponse<FileResponse> result = uploadFile(request);
-            
+            MultiFileUploadRequest multiRequest = new MultiFileUploadRequest(
+                    userId,
+                    request.getFileName(),
+                    request.getContentType(),
+                    Base64.getEncoder().encodeToString(request.getFileData()));
+
+            ApiResponse<FileResponse> result = uploadFile(multiRequest);
+
             if (result.isSuccess()) {
                 responses.add(result.getData());
             } else {
                 return ApiResponse.error("Failed to upload file: " + request.getFileName());
             }
         }
-        
+
         return ApiResponse.success("Files uploaded successfully", responses);
     }
 
     public ApiResponse<FileCollectionResponseWithContent> getUserFiles(String userId) {
         try {
             String prefix = "users/" + userId + "/";
-            
+
             ListObjectsV2Request listRequest = ListObjectsV2Request.builder()
                     .bucket(bucketName)
                     .prefix(prefix)
@@ -123,16 +168,16 @@ public class FileService {
             for (S3Object s3Object : listResponse.contents()) {
                 String[] keyParts = s3Object.key().split("/");
                 String fileName = keyParts[keyParts.length - 1];
-                
+
                 // Download file content
                 GetObjectRequest getRequest = GetObjectRequest.builder()
                         .bucket(bucketName)
                         .key(s3Object.key())
                         .build();
-                
+
                 byte[] fileData = s3Client.getObject(getRequest).readAllBytes();
                 String base64Content = java.util.Base64.getEncoder().encodeToString(fileData);
-                
+
                 files.add(new FileResponseWithContent(
                         extractFileId(s3Object.key()),
                         fileName,
@@ -140,14 +185,13 @@ public class FileService {
                         s3Object.key(),
                         s3Object.size(),
                         s3Object.lastModified().toString(),
-                        base64Content
-                ));
+                        base64Content));
             }
 
             FileCollectionResponseWithContent response = new FileCollectionResponseWithContent(userId, files);
-            return files.isEmpty() 
-                ? ApiResponse.error("No files found for user")
-                : ApiResponse.success(response);
+            return files.isEmpty()
+                    ? ApiResponse.error("No files found for user")
+                    : ApiResponse.success(response);
 
         } catch (Exception e) {
             logger.error("Error fetching user files", e);
@@ -191,9 +235,12 @@ public class FileService {
     }
 
     private String getContentTypeFromKey(String s3Key) {
-        if (s3Key.endsWith(".pdf")) return "application/pdf";
-        if (s3Key.endsWith(".png")) return "image/png";
-        if (s3Key.endsWith(".jpg") || s3Key.endsWith(".jpeg")) return "image/jpeg";
+        if (s3Key.endsWith(".pdf"))
+            return "application/pdf";
+        if (s3Key.endsWith(".png"))
+            return "image/png";
+        if (s3Key.endsWith(".jpg") || s3Key.endsWith(".jpeg"))
+            return "image/jpeg";
         return "application/octet-stream";
     }
 
@@ -206,7 +253,7 @@ public class FileService {
                     .build();
 
             ListObjectsV2Response listResponse = s3Client.listObjectsV2(listRequest);
-            
+
             for (S3Object s3Object : listResponse.contents()) {
                 if (extractFileId(s3Object.key()).equals(fileId)) {
                     return s3Object.key();
@@ -224,7 +271,7 @@ public class FileService {
             if (s3Client == null) {
                 return ApiResponse.error("S3 service unavailable");
             }
-            
+
             ListObjectsV2Request listRequest = ListObjectsV2Request.builder()
                     .bucket(bucketName)
                     .build();
@@ -235,15 +282,14 @@ public class FileService {
             for (S3Object s3Object : listResponse.contents()) {
                 String[] keyParts = s3Object.key().split("/");
                 String fileName = keyParts[keyParts.length - 1];
-                
+
                 files.add(new FileResponse(
                         extractFileId(s3Object.key()),
                         fileName,
                         getContentTypeFromKey(s3Object.key()),
                         s3Object.key(),
                         s3Object.size(),
-                        s3Object.lastModified().toString()
-                ));
+                        s3Object.lastModified().toString()));
             }
             return ApiResponse.success(files);
 
@@ -258,13 +304,13 @@ public class FileService {
             if (s3Client == null) {
                 return ApiResponse.error("S3 service unavailable");
             }
-            
+
             ListObjectsV2Request listRequest = ListObjectsV2Request.builder()
                     .bucket(bucketName)
                     .build();
 
             ListObjectsV2Response listResponse = s3Client.listObjectsV2(listRequest);
-            
+
             for (S3Object s3Object : listResponse.contents()) {
                 s3Client.deleteObject(software.amazon.awssdk.services.s3.model.DeleteObjectRequest.builder()
                         .bucket(bucketName)
@@ -286,16 +332,16 @@ public class FileService {
                 logger.error("S3 client is null");
                 return ApiResponse.error("S3 service unavailable");
             }
-            
+
             ListObjectsV2Request listRequest = ListObjectsV2Request.builder()
                     .bucket(bucketName)
                     .build();
 
             ListObjectsV2Response listResponse = s3Client.listObjectsV2(listRequest);
-            
+
             for (S3Object s3Object : listResponse.contents()) {
                 String extractedId = extractFileId(s3Object.key());
-                
+
                 if (extractedId.equals(fileId)) {
                     GetObjectRequest getRequest = GetObjectRequest.builder()
                             .bucket(bucketName)

@@ -1,19 +1,19 @@
 package com.lopez.filehandler.dto;
 
-public class FileUploadRequest {
+public class MultiFileUploadRequest {
     private String userId;
     private String fileName;
     private String contentType;
-    private byte[] fileData;
+    private String encodedFile;
 
-    public FileUploadRequest() {
+    public MultiFileUploadRequest() {
     }
 
-    public FileUploadRequest(String userId, String fileName, String contentType, byte[] fileData) {
+    public MultiFileUploadRequest(String userId, String fileName, String contentType, String encodedFile) {
         this.userId = userId;
         this.fileName = fileName;
         this.contentType = contentType;
-        this.fileData = fileData;
+        this.encodedFile = encodedFile;
     }
 
     public String getUserId() {
@@ -40,11 +40,11 @@ public class FileUploadRequest {
         this.contentType = contentType;
     }
 
-    public byte[] getFileData() {
-        return fileData;
+    public String getEncodedFile() {
+        return encodedFile;
     }
 
-    public void setFileData(byte[] fileData) {
-        this.fileData = fileData;
+    public void setEncodedFile(String encodedFile) {
+        this.encodedFile = encodedFile;
     }
 }

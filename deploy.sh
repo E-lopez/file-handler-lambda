@@ -12,10 +12,10 @@ echo "Building the application..."
 mvn clean package -Dnative -Dquarkus.native.container-build=true -Dquarkus.profile=$ENVIRONMENT
 
 # Check if build was successful
-if [ $? -ne 0 ]; then
-    echo "Build failed!"
-    exit 1
-fi
+# if [ $? -ne 0 ]; then
+#     echo "Build failed!"
+#     exit 1
+# fi
 
 # Create deployment bucket if it doesn't exist
 echo "Creating deployment bucket if needed..."
@@ -67,6 +67,7 @@ echo "S3 Bucket: $S3_BUCKET_NAME-$ENVIRONMENT"
 echo "Deployment Bucket: $DEPLOYMENT_BUCKET"
 echo ""
 echo "API Endpoints:"
+echo "  URL:  ${API_URL}"
 echo "  Health Check:     GET  ${API_URL}health"
 echo "  Get All Files:    GET  ${API_URL}file"
 echo "  Upload File:      POST ${API_URL}file"

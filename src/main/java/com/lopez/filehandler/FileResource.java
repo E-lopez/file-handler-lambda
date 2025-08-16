@@ -1,7 +1,10 @@
 package com.lopez.filehandler;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
 
 import org.jboss.logging.Logger;
 
@@ -28,6 +31,16 @@ import jakarta.ws.rs.core.Context;
 import jakarta.ws.rs.core.HttpHeaders;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
+import software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider;
+import software.amazon.awssdk.regions.Region;
+import software.amazon.awssdk.services.s3.model.PutObjectRequest;
+
+import software.amazon.awssdk.services.s3.presigner.S3Presigner;
+
+import software.amazon.awssdk.services.s3.presigner.model.PresignedPutObjectRequest;
+import software.amazon.awssdk.services.s3.presigner.model.PutObjectPresignRequest;
+
+import java.time.Duration;
 
 @Path("/file")
 @Produces(MediaType.APPLICATION_JSON)
@@ -43,12 +56,11 @@ public class FileResource {
         try {
             ApiResponse<List<FileResponse>> result = fileService.getAllFiles();
 
-            
             java.util.Map<String, Object> response = new java.util.HashMap<>();
             response.put("success", result.isSuccess());
             response.put("message", result.getMessage());
             response.put("data", result.getData());
-            
+
             if (result.isSuccess()) {
                 return Response.ok(response).build();
             } else {
@@ -64,13 +76,55 @@ public class FileResource {
         }
     }
 
+    @GET
+    @Path("/s3/{bucketName}/{userId}/{fileName}")
+    public Response createPresignedUrl(
+            @PathParam("bucketName") String bucketName,
+            @PathParam("userId") String userId,
+            @PathParam("fileName") String fileName) {
+
+        try (S3Presigner presigner = S3Presigner.builder()
+                .region(Region.US_EAST_1)
+                .credentialsProvider(DefaultCredentialsProvider.create())
+                .build()) {
+            String keyName = userId + "/" + fileName;
+
+            logger.infof("Creating presigned URL for bucket: %s, key: %s", bucketName, keyName);
+            PutObjectRequest objectRequest = PutObjectRequest.builder()
+                    .bucket(bucketName)
+                    .key(keyName)
+                    .build();
+
+            PutObjectPresignRequest presignRequest = PutObjectPresignRequest.builder()
+                    .signatureDuration(Duration.ofMinutes(1)) // URL valid for 1 minute
+                    .putObjectRequest(objectRequest)
+                    .build();
+
+            PresignedPutObjectRequest presignedRequest = presigner.presignPutObject(presignRequest);
+
+            String presignedUrl = presignedRequest.url().toString();
+
+            // Log info if needed
+            logger.infof("HTTP method: [%s]", presignedRequest.httpRequest().method());
+            logger.infof("Headers: %s", presignedRequest.httpRequest().headers());
+            logger.infof("Presigned URL to upload a file to: %s", presignedUrl);
+
+            return Response.ok(Map.of("url", presignedUrl)).build();
+
+        } catch (Exception e) {
+            logger.error("Failed to generate presigned URL", e);
+            return Response.serverError().entity("Could not generate presigned URL").build();
+        }
+    }
+
     @POST
     public Response uploadFile(String rawBody, @Context HttpHeaders headers) {
         try {
             logger.infof("POST /file - Content-Type: %s", headers.getHeaderString("Content-Type"));
             logger.infof("POST /file - Raw body length: %d", rawBody != null ? rawBody.length() : 0);
-            logger.infof("POST /file - Raw body preview: %s", rawBody != null ? rawBody.substring(0, Math.min(100, rawBody.length())) : "null");
-            
+            logger.infof("POST /file - Raw body preview: %s",
+                    rawBody != null ? rawBody.substring(0, Math.min(100, rawBody.length())) : "null");
+
             if (rawBody == null || rawBody.trim().isEmpty()) {
                 return Response.status(Response.Status.BAD_REQUEST)
                         .entity(ApiResponse.badRequest("Request body is required"))
@@ -81,7 +135,8 @@ public class FileResource {
             FileUploadRequest request;
             try {
                 request = new com.fasterxml.jackson.databind.ObjectMapper().readValue(rawBody, FileUploadRequest.class);
-                logger.infof("Successfully parsed request - userId: %s, fileName: %s", request.getUserId(), request.getFileName());
+                logger.infof("Successfully parsed request - userId: %s, fileName: %s", request.getUserId(),
+                        request.getFileName());
             } catch (Exception parseError) {
                 logger.errorf("Failed to parse JSON: %s", parseError.getMessage());
                 return Response.status(Response.Status.BAD_REQUEST)
@@ -90,7 +145,7 @@ public class FileResource {
             }
 
             ApiResponse<FileResponse> result = fileService.uploadFile(request);
-            
+
             if (result.isSuccess()) {
                 return Response.ok(result).build();
             } else {
@@ -110,6 +165,7 @@ public class FileResource {
     @Path("/multiple")
     public Response uploadMultipleFiles(List<FileUploadRequest> requests) {
         try {
+            logger.infof("POST /file/multiple - Number of requests: %d", requests != null ? requests.size() : 0);
             if (requests == null || requests.isEmpty()) {
                 return Response.status(Response.Status.BAD_REQUEST)
                         .entity(ApiResponse.badRequest("At least one file is required"))
@@ -118,7 +174,7 @@ public class FileResource {
 
             String userId = requests.get(0).getUserId();
             ApiResponse<List<FileResponse>> result = fileService.uploadMultipleFiles(userId, requests);
-            
+
             if (result.isSuccess()) {
                 return Response.ok(result).build();
             } else {
@@ -139,14 +195,13 @@ public class FileResource {
     public Response getUserFiles(@PathParam("userId") String userId) {
         try {
 
-            
             ApiResponse<FileCollectionResponseWithContent> result = fileService.getUserFiles(userId);
-            
+
             java.util.Map<String, Object> response = new java.util.HashMap<>();
             response.put("success", result.isSuccess());
             response.put("message", result.getMessage());
             response.put("data", result.getData());
-            
+
             if (result.isSuccess()) {
                 return Response.ok(response).build();
             } else {
@@ -167,9 +222,8 @@ public class FileResource {
     public Response downloadFileById(@PathParam("fileId") String fileId) {
         try {
 
-            
             ApiResponse<byte[]> result = fileService.downloadFileById(fileId);
-            
+
             if (result.isSuccess()) {
                 return Response.ok(result.getData())
                         .header("Content-Disposition", "attachment; filename=\"file_" + fileId + "\"")
@@ -194,7 +248,7 @@ public class FileResource {
     public Response deleteAllFiles() {
         try {
             ApiResponse<Void> result = fileService.deleteAllFiles();
-            
+
             if (result.isSuccess()) {
                 return Response.ok(result).build();
             } else {
@@ -211,11 +265,15 @@ public class FileResource {
     }
 
     private String getContentTypeFromFileName(String fileName) {
-        if (fileName == null) return "application/octet-stream";
+        if (fileName == null)
+            return "application/octet-stream";
         String lowerName = fileName.toLowerCase();
-        if (lowerName.endsWith(".pdf")) return "application/pdf";
-        if (lowerName.endsWith(".png")) return "image/png";
-        if (lowerName.endsWith(".jpg") || lowerName.endsWith(".jpeg")) return "image/jpeg";
+        if (lowerName.endsWith(".pdf"))
+            return "application/pdf";
+        if (lowerName.endsWith(".png"))
+            return "image/png";
+        if (lowerName.endsWith(".jpg") || lowerName.endsWith(".jpeg"))
+            return "image/jpeg";
         return "application/octet-stream";
     }
 }
